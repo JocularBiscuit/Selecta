@@ -1,5 +1,5 @@
 import Foundation
-
+import UIKit
 import ImageIO
 import CoreImage
 import CryptoKit
@@ -40,7 +40,7 @@ struct ImageMeta: Equatable, Sendable {
 final class ThumbnailStore: @unchecked Sendable {
     static let shared = ThumbnailStore()
 
-    private let memory = NSCache<NSString, PlatformImage>()
+    private let memory = NSCache<NSString, UIImage>()
     private let gate = AsyncLimiter(limit: 4)
     private let cacheDir: URL
 
@@ -62,7 +62,7 @@ final class ThumbnailStore: @unchecked Sendable {
     // MARK: Public API
 
     /// Grid/filmstrip thumbnail. `maxPixel` is in device pixels.
-    func thumbnail(for item: CardItem, maxPixel: CGFloat) async -> PlatformImage? {
+    func thumbnail(for item: CardItem, maxPixel: CGFloat) async -> UIImage? {
         if let assetID = item.assetLocalID {
             let bucket = Self.thumbBuckets.first { $0 >= maxPixel } ?? Self.thumbBuckets[Self.thumbBuckets.count - 1]
             return await assetImage(assetID: assetID, bucket: bucket)
@@ -73,7 +73,7 @@ final class ThumbnailStore: @unchecked Sendable {
 
     /// Loupe-size image: big enough for 100% focus checks. Not disk-cached
     /// (too large); memory-cached only.
-    func loupeImage(for item: CardItem) async -> PlatformImage? {
+    func loupeImage(for item: CardItem) async -> UIImage? {
         if let assetID = item.assetLocalID {
             return await assetImage(assetID: assetID, bucket: Self.loupeBucket)
         }
@@ -85,7 +85,7 @@ final class ThumbnailStore: @unchecked Sendable {
     /// synchronously against the memory cache, then the thumbnail disk cache.
     /// Lets the loupe show *something* instantly while full-res decodes
     /// (progressive loading; never blocks).
-    func cachedPreview(for item: CardItem) -> PlatformImage? {
+    func cachedPreview(for item: CardItem) -> UIImage? {
         if let assetID = item.assetLocalID {
             // Photos-library assets are memory-only (PhotoKit has its own
             // disk caches); scan every bucket, largest first.
@@ -134,7 +134,7 @@ final class ThumbnailStore: @unchecked Sendable {
     /// Fetch (or return the cached) image for a Photos-library asset.
     /// Memory-cached only — PhotoKit maintains its own disk caches, so a
     /// second cache layer on disk would just double the footprint.
-    private func assetImage(assetID: String, bucket: CGFloat) async -> PlatformImage? {
+    private func assetImage(assetID: String, bucket: CGFloat) async -> UIImage? {
         let key = assetKey(assetID, bucket: bucket)
         if let hit = memory.object(forKey: key as NSString) { return hit }
         if Task.isCancelled { return nil }
@@ -147,7 +147,7 @@ final class ThumbnailStore: @unchecked Sendable {
         if Task.isCancelled { return nil }
         if let hit = memory.object(forKey: key as NSString) { return hit }
 
-        let fetched: PlatformImage?
+        let fetched: UIImage?
         if bucket >= Self.loupeBucket {
             fetched = await PhotoLibrarySource.shared.fullImage(assetID: assetID)
         } else {
@@ -161,7 +161,7 @@ final class ThumbnailStore: @unchecked Sendable {
 
     // MARK: Core pipeline
 
-    private func image(for url: URL, maxPixel: CGFloat, diskCache: Bool) async -> PlatformImage? {
+    private func image(for url: URL, maxPixel: CGFloat, diskCache: Bool) async -> UIImage? {
         let key = cacheKey(url: url, maxPixel: maxPixel)
 
         if let hit = memory.object(forKey: key as NSString) { return hit }
@@ -178,9 +178,9 @@ final class ThumbnailStore: @unchecked Sendable {
         defer { gate.release() }
         if Task.isCancelled { return nil }
 
-        let decoded: PlatformImage? = await Task.detached(priority: .userInitiated) { [cacheDir] in
+        let decoded: UIImage? = await Task.detached(priority: .userInitiated) { [cacheDir] in
             guard let img = Self.decode(url: url, maxPixel: maxPixel) else { return nil }
-            if diskCache, let data = img.jpegDataCompat(compressionQuality: 0.8) {
+            if diskCache, let data = img.jpegData(compressionQuality: 0.8) {
                 let dest = cacheDir.appendingPathComponent(key).appendingPathExtension("jpg")
                 try? data.write(to: dest, options: .atomic)
             }
@@ -193,12 +193,12 @@ final class ThumbnailStore: @unchecked Sendable {
         return decoded
     }
 
-    private static func pixelCost(of image: PlatformImage) -> Int {
-        guard let cg = image.cgImageCompat else { return 1 }
+    private static func pixelCost(of image: UIImage) -> Int {
+        guard let cg = image.cgImage else { return 1 }
         return cg.width * cg.height * 4
     }
 
-    private static func decode(url: URL, maxPixel: CGFloat) -> PlatformImage? {
+    private static func decode(url: URL, maxPixel: CGFloat) -> UIImage? {
         let ext = url.pathExtension.lowercased()
         if FileTypes.video.contains(ext) { return videoPosterFrame(url: url, maxPixel: maxPixel) }
 
@@ -211,7 +211,7 @@ final class ThumbnailStore: @unchecked Sendable {
 
     /// ImageIO decode. For RAW files this pulls the embedded JPEG preview;
     /// for JPEGs it downsample-decodes without loading the full bitmap.
-    private static func imageIOThumbnail(url: URL, maxPixel: CGFloat) -> PlatformImage? {
+    private static func imageIOThumbnail(url: URL, maxPixel: CGFloat) -> UIImage? {
         let srcOptions: [CFString: Any] = [kCGImageSourceShouldCache: false]
         guard let source = CGImageSourceCreateWithURL(url as CFURL, srcOptions as CFDictionary) else { return nil }
         let thumbOptions: [CFString: Any] = [
@@ -221,14 +221,14 @@ final class ThumbnailStore: @unchecked Sendable {
             kCGImageSourceThumbnailMaxPixelSize: Int(maxPixel)
         ]
         guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbOptions as CFDictionary) else { return nil }
-        return PlatformImage.fromCGImage(cg)
+        return UIImage(cgImage: cg)
     }
 
     /// Poster frame for a video: a frame near the 1-second mark (clamped to the
     /// clip's duration by the generator's loose tolerances), oriented and sized
     /// like any other thumbnail. Runs synchronously inside the detached decode
     /// task, and the result flows through the same memory/disk caches as stills.
-    private static func videoPosterFrame(url: URL, maxPixel: CGFloat) -> PlatformImage? {
+    private static func videoPosterFrame(url: URL, maxPixel: CGFloat) -> UIImage? {
         let asset = AVURLAsset(url: url)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
@@ -241,13 +241,13 @@ final class ThumbnailStore: @unchecked Sendable {
         // frame if the seek still fails.
         let target = CMTime(seconds: 1, preferredTimescale: 600)
         if let cg = try? generator.copyCGImage(at: target, actualTime: nil) {
-            return PlatformImage.fromCGImage(cg)
+            return UIImage(cgImage: cg)
         }
         guard let cg = try? generator.copyCGImage(at: .zero, actualTime: nil) else { return nil }
-        return PlatformImage.fromCGImage(cg)
+        return UIImage(cgImage: cg)
     }
 
-    private static func ciRawRender(url: URL, maxPixel: CGFloat) -> PlatformImage? {
+    private static func ciRawRender(url: URL, maxPixel: CGFloat) -> UIImage? {
         guard let filter = CIRAWFilter(imageURL: url) else { return nil }
         filter.isDraftModeEnabled = true
         guard let output = filter.outputImage else { return nil }
@@ -257,7 +257,7 @@ final class ThumbnailStore: @unchecked Sendable {
         let scaled = output.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         let context = CIContext(options: [.useSoftwareRenderer: false])
         guard let cg = context.createCGImage(scaled, from: scaled.extent) else { return nil }
-        return PlatformImage.fromCGImage(cg)
+        return UIImage(cgImage: cg)
     }
 
     /// Load metadata (dimensions, capture date, exposure) without decoding pixels.
@@ -394,10 +394,10 @@ final class ThumbnailStore: @unchecked Sendable {
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
-    private func loadFromDisk(key: String) -> PlatformImage? {
+    private func loadFromDisk(key: String) -> UIImage? {
         let url = cacheDir.appendingPathComponent(key).appendingPathExtension("jpg")
         guard let data = try? Data(contentsOf: url) else { return nil }
-        return PlatformImage(data: data)
+        return UIImage(data: data)
     }
 }
 

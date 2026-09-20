@@ -1,5 +1,6 @@
 import Foundation
 import Photos
+import UIKit
 import AVFoundation
 import UniformTypeIdentifiers
 
@@ -51,7 +52,7 @@ final class PhotoLibrarySource {
     /// "Moments"-style smart groupings; for a plain user-created album it
     /// routinely returns nil or an empty result, which is why album rows
     /// were showing no cover at all).
-    func coverImages(albumID: String, count: Int, maxPixel: CGFloat) async -> [PlatformImage] {
+    func coverImages(albumID: String, count: Int, maxPixel: CGFloat) async -> [UIImage] {
         guard let collection = fetchCollection(albumID) else { return [] }
         let options = PHFetchOptions()
         options.predicate = Self.mediaPredicate()
@@ -63,7 +64,7 @@ final class PhotoLibrarySource {
         assets.reserveCapacity(fetched.count)
         fetched.enumerateObjects { asset, _, _ in assets.append(asset) }
 
-        return await withTaskGroup(of: (Int, PlatformImage?).self) { group in
+        return await withTaskGroup(of: (Int, UIImage?).self) { group in
             for (offset, asset) in assets.enumerated() {
                 group.addTask {
                     let image = await self.requestImage(
@@ -74,7 +75,7 @@ final class PhotoLibrarySource {
                     return (offset, image)
                 }
             }
-            var ordered = [PlatformImage?](repeating: nil, count: assets.count)
+            var ordered = [UIImage?](repeating: nil, count: assets.count)
             for await (offset, image) in group { ordered[offset] = image }
             return ordered.compactMap { $0 }
         }
@@ -134,7 +135,7 @@ final class PhotoLibrarySource {
     }
 
     /// Grid thumbnail for one asset.
-    func thumbnail(assetID: String, maxPixel: CGFloat) async -> PlatformImage? {
+    func thumbnail(assetID: String, maxPixel: CGFloat) async -> UIImage? {
         guard let asset = fetchAsset(assetID) else { return nil }
         return await requestImage(
             asset: asset,
@@ -144,7 +145,7 @@ final class PhotoLibrarySource {
     }
 
     /// Full-resolution image for the loupe.
-    func fullImage(assetID: String) async -> PlatformImage? {
+    func fullImage(assetID: String) async -> UIImage? {
         guard let asset = fetchAsset(assetID) else { return nil }
         return await requestImage(
             asset: asset,
@@ -275,7 +276,7 @@ final class PhotoLibrarySource {
     /// exactly once, with the final image (or nil on failure/cancel). Task
     /// cancellation cancels the underlying PhotoKit request (stopping any
     /// in-flight iCloud download) and resumes with nil immediately.
-    private func requestImage(asset: PHAsset, targetSize: CGSize, contentMode: PHImageContentMode) async -> PlatformImage? {
+    private func requestImage(asset: PHAsset, targetSize: CGSize, contentMode: PHImageContentMode) async -> UIImage? {
         let options = PHImageRequestOptions()
         options.isNetworkAccessAllowed = true
         options.deliveryMode = .highQualityFormat
