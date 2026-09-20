@@ -3,6 +3,7 @@ options:
   bundleIdPrefix: de.wollschlaeger
   deploymentTarget:
     iOS: "17.0"
+    macOS: "14.0"
   createIntermediateGroups: true
 settings:
   base:
@@ -49,6 +50,30 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
+  SelectaMac:
+    type: application
+    platform: macOS
+    sources:
+      - path: Culler/Models
+      - path: Culler/Services
+        excludes:
+          - PhotosImport.swift
+          - ShareService.swift
+      - path: CullerMac
+    info:
+      path: CullerMac/Info.plist
+      properties:
+        CFBundleDisplayName: Selecta
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        NSPhotoLibraryUsageDescription: "Selecta reads your library only to import the albums you choose for culling, and adds photos only when you use \"Add to Photos album\" during export."
+        NSPhotoLibraryAddUsageDescription: "Selecta adds the photos you export to an album in your Photos library, if you ask it to."
+        NSHumanReadableCopyright: "© Daniel Wollschläger"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: de.wollschlaeger.selecta.mac
+        GENERATE_INFOPLIST_FILE: NO
+        COMBINE_HIDPI_IMAGES: YES
 schemes:
   Culler:
     build:
@@ -61,3 +86,9 @@ schemes:
       config: Debug
       targets:
         - CullerTests
+  SelectaMac:
+    build:
+      targets:
+        SelectaMac: all
+    run:
+      config: Debug

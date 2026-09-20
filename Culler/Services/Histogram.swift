@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 
 /// RGB histogram, Lightroom-style: three channels rendered additively so
 /// overlapping regions blend toward white.
@@ -13,8 +12,8 @@ struct HistogramData: Equatable {
 enum HistogramEngine {
     /// Computes a 256-bin RGB histogram from a small downsampled render.
     /// Cheap enough to run on every loupe image change.
-    static func compute(from image: UIImage) async -> HistogramData? {
-        let cg = image.cgImage
+    static func compute(from image: PlatformImage) async -> HistogramData? {
+        let cg = image.cgImageCompat
         return await Task.detached(priority: .utility) { () -> HistogramData? in
             guard let cg else { return nil }
             let maxDim: CGFloat = 220

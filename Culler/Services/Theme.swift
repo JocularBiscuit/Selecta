@@ -1,10 +1,10 @@
 import SwiftUI
-import UIKit
 
 /// Design tokens — Lightroom/Bridge-inspired neutral dark chrome.
 /// All views style themselves exclusively through these tokens so the app
 /// stays visually coherent. The chrome is deliberately colorless so the
-/// photos are the only colorful thing on screen.
+/// photos are the only colorful thing on screen. Plain `Color` values have
+/// no platform dependency, so this is shared between the iOS and macOS apps.
 enum Theme {
     // Surfaces
     static let bg = Color(white: 0.055)             // app background
@@ -29,19 +29,4 @@ enum Theme {
     // Metrics
     static let radius: CGFloat = 8
     static let chipRadius: CGFloat = 6
-}
-
-/// Central haptics — honors the Settings toggle.
-enum Haptics {
-    private static var enabled: Bool {
-        UserDefaults.standard.object(forKey: SettingsKeys.hapticsEnabled) == nil
-            ? true
-            : UserDefaults.standard.bool(forKey: SettingsKeys.hapticsEnabled)
-    }
-    static func tap() {
-        if enabled { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
-    }
-    static func rate() {
-        if enabled { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
-    }
 }
