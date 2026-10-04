@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import AVKit
+import AVFoundation
 
 /// Fullscreen single-image culling view, styled like a professional
 /// desktop loupe (Lightroom / Photo Mechanic): neutral dark chrome, one
@@ -148,16 +149,21 @@ struct LoupeScreen: View {
                 }
             }
 
-            // Edge tap zones for one-handed prev/next.
-            if !isZoomed {
-                HStack {
-                    navZone(systemImage: "chevron.left") { step(-1) }
-                    Spacer()
-                    navZone(systemImage: "chevron.right") { step(1) }
-                }
-                .opacity(chromeVisible ? 1 : 0)
-                .allowsHitTesting(chromeVisible)
+            // Edge tap zones for one-handed prev/next. Shown whenever chrome
+            // is — including while zoomed in, so tapping to reveal chrome
+            // still gives a way to move on without zooming back out first.
+            // Gating on chromeVisible for both opacity AND hit-testing (not
+            // just !isZoomed) is what already kept this from interfering
+            // with panning a zoomed photo: while zoomed the chrome starts
+            // hidden, so the strip is non-interactive until the user
+            // explicitly taps to reveal it.
+            HStack {
+                navZone(systemImage: "chevron.left") { step(-1) }
+                Spacer()
+                navZone(systemImage: "chevron.right") { step(1) }
             }
+            .opacity(chromeVisible ? 1 : 0)
+            .allowsHitTesting(chromeVisible)
 
             VStack(spacing: 0) {
                 topBar
@@ -412,6 +418,13 @@ struct LoupeScreen: View {
         guard let item = currentItem, item.kind == .video else { return }
         chromeVisible = true   // the exit button must be reachable while playing
         videoLoadFailed = false
+        // Without this, the app's audio session stays on the system default
+        // (.soloAmbient), which is SILENCED by the hardware mute switch —
+        // the exact "no sound" symptom. .playback is the category media
+        // apps use for content the user explicitly asked to play; it's
+        // audible regardless of the mute switch, matching Photos.app itself.
+        try? AVAudioSession.sharedInstance().setCategory(.playback)
+        try? AVAudioSession.sharedInstance().setActive(true)
         if let url = item.videoURL {
             player = AVPlayer(url: url)
             isPlayingVideo = true

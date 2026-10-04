@@ -344,7 +344,7 @@ private struct ProjectCard: View {
     }
 
     private var countText: String {
-        guard memberCount > 0 else { return "Empty" }
+        guard memberCount > 0 else { return "0 photos" }
         var text = memberCount == 1 ? "1 photo" : "\(memberCount) photos"
         if pickCount > 0 { text += " · \(pickCount) picked" }
         return text
