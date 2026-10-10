@@ -72,14 +72,25 @@ final class Library {
     var labelFilter: Set<String> = [] { didSet { pruneSelectionToFiltered() } }
     var typeFilter: TypeFilter = .any { didSet { pruneSelectionToFiltered() } }
     var activeProject: ProjectRecord? { didSet { pruneSelectionToFiltered() } }
-    var sortKey: SortKey = .captureTime
+    var sortKey: SortKey = .captureTime {
+        // Posting order reads naturally 1, 2, 3… so switching to it starts
+        // ascending (every other key defaults to descending/newest first).
+        didSet { if sortKey == .postingOrder && oldValue != .postingOrder { sortAscending = true } }
+    }
     var sortAscending = false   // newest first by default
 
     static let unlabeledFilterToken = "none"
 
     // Selection (grid multi-select)
     var selectionMode = false
-    var selection: Set<String> = []
+    var selection: Set<String> = [] {
+        didSet { trackSelectionOrder(from: oldValue) }
+    }
+    /// Selected ids in the order they were selected (tap order). `selection`
+    /// itself is an unordered Set used everywhere, so the order is derived by
+    /// watching its changes — no call site that edits the Set needs to know.
+    /// Used to number photos in posting order.
+    @ObservationIgnored private(set) var selectionOrder: [String] = []
 
     private var indexByID: [String: Int] = [:]
     private var undoStack: [UndoEntry] = []
@@ -242,6 +253,15 @@ final class Library {
                         ? a.baseName < b.baseName
                         : ca.localizedStandardCompare(cb) == .orderedAscending
                 }
+            case .postingOrder:
+                switch (a.postOrder, b.postOrder) {
+                case (nil, _?): return false   // unnumbered sorts last, both directions
+                case (_?, nil): return true
+                case (nil, nil):
+                    ordered = a.baseName < b.baseName
+                case let (na?, nb?):
+                    ordered = na < nb
+                }
             }
             return sortAscending ? ordered : !ordered
         }
@@ -303,7 +323,100 @@ final class Library {
 
     func remove(ids: Set<String>, from project: ProjectRecord) {
         project.itemIDs.removeAll { ids.contains($0) }
+        for id in ids { project.postOrder[id] = nil }
         try? context.save()
+    }
+
+    // MARK: Posting order (numbers within the open project)
+
+    /// Keep `selectionOrder` in step with `selection`: ids that left the Set
+    /// drop out, ids that joined are appended in the order they arrived. If
+    /// several arrive at once (Select All, a range) they're appended in grid
+    /// order so the result is deterministic rather than Set-iteration order.
+    private func trackSelectionOrder(from old: Set<String>) {
+        guard selection != old else { return }
+        selectionOrder.removeAll { !selection.contains($0) }
+        let added = selection.subtracting(old)
+        guard !added.isEmpty else { return }
+        if added.count == 1 {
+            selectionOrder.append(added.first!)
+        } else {
+            let gridPosition = Dictionary(uniqueKeysWithValues: filteredItems.enumerated().map { ($1.id, $0) })
+            selectionOrder += added.sorted { (gridPosition[$0] ?? .max) < (gridPosition[$1] ?? .max) }
+        }
+    }
+
+    /// The selected photos in tap order.
+    var orderedSelection: [String] {
+        selectionOrder.filter { selection.contains($0) }
+    }
+
+    /// Smallest number that isn't used yet beyond the highest one — the
+    /// natural "next" number to continue a posting sequence from.
+    var nextFreePostOrder: Int {
+        (openedProject?.postOrder.values.max() ?? 0) + 1
+    }
+
+    /// Number `ids` (in the given order) start, start+1, … in the open
+    /// project's posting order. Photos already holding a number in that range
+    /// move LATER to make room, and so does everything directly after them:
+    /// walking up from `start`, each existing photo ends up at
+    /// max(its own number, one past the previous one). A gap in the numbering
+    /// stops the shifting, so only photos that actually collide move.
+    /// Re-numbering a photo that already has a number simply moves it.
+    func placePostOrder(ids: [String], startingAt start: Int) {
+        guard let project = openedProject, !ids.isEmpty else { return }
+        let start = max(1, start)
+        var order = project.postOrder
+        for id in ids { order[id] = nil }
+
+        var cursor = start + ids.count - 1
+        let displaced = order.filter { $0.value >= start }.sorted { $0.value < $1.value }
+        for (id, old) in displaced {
+            let new = max(old, cursor + 1)
+            order[id] = new
+            cursor = new
+        }
+        for (offset, id) in ids.enumerated() { order[id] = start + offset }
+        commitPostOrder(order, to: project)
+    }
+
+    /// Remove the number from these photos (the rest keep theirs).
+    func clearPostOrder(ids: Set<String>) {
+        guard let project = openedProject else { return }
+        var order = project.postOrder
+        for id in ids { order[id] = nil }
+        commitPostOrder(order, to: project)
+    }
+
+    /// Renumber 1…N keeping the current order, closing any gaps.
+    func closePostOrderGaps() {
+        guard let project = openedProject else { return }
+        var order: [String: Int] = [:]
+        for (index, entry) in project.postOrder.sorted(by: { $0.value < $1.value }).enumerated() {
+            order[entry.key] = index + 1
+        }
+        commitPostOrder(order, to: project)
+    }
+
+    private func commitPostOrder(_ order: [String: Int], to project: ProjectRecord) {
+        project.postOrder = order
+        try? context.save()
+        applyPostOrder(from: project)
+    }
+
+    /// Copy a project's numbers onto the loaded items (one cache
+    /// invalidation for the whole batch).
+    private func applyPostOrder(from project: ProjectRecord) {
+        var changed = false
+        for index in items.indices {
+            let number = project.postOrder[items[index].id]
+            if items[index].postOrder != number {
+                items[index].postOrder = number
+                changed = true
+            }
+        }
+        if changed { itemsRevision += 1 }
     }
 
     func deleteProject(_ project: ProjectRecord) {
@@ -576,6 +689,7 @@ final class Library {
             clearFilters()   // also sets activeProject = nil
             items = mergeRecordsMixedOrigin(into: resolved)
             rebuildIndex()
+            applyPostOrder(from: project)
             scanGeneration += 1
             backfillRawFlags()
         }
@@ -1045,6 +1159,13 @@ final class Library {
         sourceKind = .folder
         items = newItems
         rebuildIndex()
+    }
+
+    /// Test hook: mark `project` as the open project (and load its posting
+    /// order onto the current items) without resolving real sources.
+    func _setOpenedProjectForTesting(_ project: ProjectRecord) {
+        openedProject = project
+        applyPostOrder(from: project)
     }
 
     /// Test hook: run `openProject` and await its completion by polling

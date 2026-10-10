@@ -947,6 +947,16 @@ struct BatchBar: View {
                 HStack(spacing: 4) {
                     Spacer(minLength: 0)
 
+                    if library.openedProject != nil {
+                        PostOrderMenu(library: library, ids: library.orderedSelection) {
+                            Image(systemName: "list.number")
+                                .font(.system(size: 16, weight: .medium))
+                                .foregroundStyle(library.selection.isEmpty ? Theme.textTertiary : Theme.textPrimary)
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
+                        }
+                    }
+
                     addToProjectMenu
 
                     Button {

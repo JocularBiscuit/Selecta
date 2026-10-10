@@ -111,6 +111,9 @@ struct CardItem: Identifiable, Hashable {
     /// Library.backfillRawFlags); file-based items never use this, their
     /// RAW-ness is already known from rawURL at scan time.
     var assetIsRaw: Bool? = nil
+    /// Posting-order number within the open project (nil = unnumbered).
+    /// Mirrors ProjectRecord.postOrder while that project is open.
+    var postOrder: Int? = nil
 
     var kind: FileKind {
         if let assetKind { return assetKind }
@@ -194,6 +197,11 @@ final class ProjectRecord {
     /// Member item ids ("cardKey|baseNameLower") — spans cards; items only
     /// render while their card is open.
     var itemIDs: [String] = []
+    /// Posting order: item id → its number (1 = post first). Per project, so
+    /// the same photo can have a different number in another project. Numbers
+    /// are unique within a project but may have gaps (see
+    /// Library.placePostOrder for how collisions shift).
+    var postOrder: [String: Int] = [:]
 
     init(name: String) {
         self.name = name
@@ -240,5 +248,6 @@ enum SortKey: String, CaseIterable, Identifiable {
     case rating = "Rating"
     case fileType = "File type"
     case camera = "Camera"
+    case postingOrder = "Posting order"
     var id: String { rawValue }
 }

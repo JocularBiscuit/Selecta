@@ -57,6 +57,7 @@ struct ThumbCell: View {
         .overlay(alignment: .bottom) { labelBar }
         .overlay(alignment: .topLeading) { typeBadge }
         .overlay(alignment: .topTrailing) { flagBadge }
+        .overlay(alignment: .top) { postOrderBadge }
         .overlay { videoPlayGlyph }
         .overlay { selectionOverlay }
         .overlay {
@@ -70,6 +71,7 @@ struct ThumbCell: View {
         .animation(nil, value: item.rating)
         .animation(nil, value: item.flag)
         .animation(nil, value: item.label)
+        .animation(nil, value: item.postOrder)
         .animation(nil, value: isSelected)
         .task(id: taskKey) {
             loadFailed = false
@@ -172,6 +174,23 @@ struct ThumbCell: View {
                 .padding(.vertical, 1.5)
                 .background(Theme.scrim)
                 .padding(3)
+                .allowsHitTesting(false)
+        }
+    }
+
+    /// Posting-order number (top centre, clear of the type badge on the left
+    /// and the pick/reject flag on the right). Only photos in a numbered
+    /// project have one.
+    @ViewBuilder
+    private var postOrderBadge: some View {
+        if let number = item.postOrder {
+            Text(verbatim: "\(number)")
+                .font(.system(size: size < 100 ? 11 : 13, weight: .bold).monospacedDigit())
+                .foregroundStyle(.black)
+                .padding(.horizontal, 6)
+                .frame(minWidth: size < 100 ? 20 : 24, minHeight: size < 100 ? 20 : 24)
+                .background(Theme.accent, in: Capsule())
+                .padding(.top, 4)
                 .allowsHitTesting(false)
         }
     }

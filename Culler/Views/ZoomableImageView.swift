@@ -53,7 +53,7 @@ final class ZoomScrollView: UIScrollView, UIScrollViewDelegate {
         showsHorizontalScrollIndicator = false
         contentInsetAdjustmentBehavior = .never
         decelerationRate = .fast
-        bouncesZoom = true
+        bouncesZoom = false
         backgroundColor = .clear
 
         imageView.contentMode = .scaleAspectFill
@@ -193,11 +193,10 @@ final class ZoomScrollView: UIScrollView, UIScrollViewDelegate {
               image.size.width > 0, image.size.height > 0 else { return }
         let fit = min(bounds.width / image.size.width, bounds.height / image.size.height)
         fitZoomScale = fit
-        // Real pinch-out headroom below fit: hitting a hard wall exactly at
-        // fit felt abrupt and made the gesture feel unresponsive. This also
-        // lets a photo be viewed smaller than the screen against its
-        // surroundings. bouncesZoom still gives a soft edge past this.
-        minimumZoomScale = max(fit * 0.1, 0.02)
+        // Never smaller than fit-to-screen: pinching out below it shrank the
+        // photo into the middle of the screen, which hurt usability. Fit is
+        // a hard floor (bouncesZoom is off so it doesn't dip past it either).
+        minimumZoomScale = fit
         maximumZoomScale = max(1.0, fit * 6)
     }
 

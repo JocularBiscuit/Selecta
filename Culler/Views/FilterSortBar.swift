@@ -385,6 +385,7 @@ struct FilterSortBar: View {
         cyclingSortOption("Rating", key: .rating, firstAscending: false)
         cyclingSortOption("Type", key: .fileType, firstAscending: true)
         cyclingSortOption("Camera", key: .camera, firstAscending: true)
+        cyclingSortOption("Order", key: .postingOrder, firstAscending: true)
     }
 
     private func cyclingSortOption(_ title: String, key: SortKey, firstAscending: Bool) -> some View {
@@ -416,6 +417,7 @@ struct FilterSortBar: View {
         case .rating: return "Rating"
         case .fileType: return "Type"
         case .camera: return "Camera"
+        case .postingOrder: return "Order"
         }
     }
 

@@ -833,6 +833,29 @@ struct LoupeScreen: View {
             starControl(for: item)
 
             Spacer(minLength: 2)
+
+            // Posting order for this shot (projects only): shows its number,
+            // or a placeholder icon when it has none yet.
+            if library.openedProject != nil {
+                toolbarDivider
+                PostOrderMenu(library: library, ids: [item.id]) {
+                    Group {
+                        if let number = item.postOrder {
+                            Text(verbatim: "\(number)")
+                                .font(.system(size: 15, weight: .bold).monospacedDigit())
+                                .foregroundStyle(.black)
+                                .frame(minWidth: 28, minHeight: 28)
+                                .background(Theme.accent, in: Circle())
+                        } else {
+                            Image(systemName: "list.number")
+                                .font(.system(size: 17, weight: .medium))
+                                .foregroundStyle(Theme.textSecondary)
+                        }
+                    }
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+                }
+            }
         }
         .padding(.horizontal, 5)
         .frame(maxWidth: .infinity)
@@ -841,6 +864,7 @@ struct LoupeScreen: View {
         .overlay(alignment: .top) { Theme.hairline.frame(height: 1) }
         .animation(nil, value: item.rating)
         .animation(nil, value: item.flag)
+        .animation(nil, value: item.postOrder)
     }
 
     private var toolbarDivider: some View {

@@ -12,9 +12,13 @@ export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DD="/tmp/culler-device-dd"
 
-# Grab the first UUID-shaped identifier regardless of state wording
-# ("connected", "available (paired)", …) — devicectl's labels vary.
-DEVICE_ID=$(xcrun devicectl list devices 2>/dev/null | grep -oE '[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}' | head -1)
+# First PHYSICAL device that is connected/paired. Matching only "physical"
+# rows matters: simulators are listed too, and a modern iPhone UDID
+# (00008110-XXXXXXXXXXXXXXXX) is not UUID-shaped, so a plain UUID grep
+# would pick a simulator instead. "unavailable" rows are skipped.
+DEVICE_ID=$(xcrun devicectl list devices 2>/dev/null \
+  | grep -E ' physical ' | grep -E ' (connected|available \(paired\)) ' \
+  | grep -oE '[0-9A-Fa-f]{8}-[0-9A-Fa-f-]{16,28}' | head -1)
 if [[ -z "$DEVICE_ID" ]]; then
   echo "No paired iPhone found. Plug it in, unlock it, tap Trust, and retry."
   exit 1
