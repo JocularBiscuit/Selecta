@@ -63,7 +63,6 @@ struct ProjectsHomeView: View {
     @State private var projects: [ProjectRecord] = []
     @State private var showNewProjectAlert = false
     @State private var newProjectName = ""
-    @State private var showAddPhotosChooser = false
     @State private var addPhotosTarget: ProjectRecord?
     @State private var showAlbumBrowser = false
     @State private var isOpeningAlbum = false
@@ -130,22 +129,25 @@ struct ProjectsHomeView: View {
         } message: {
             Text("You'll pick photos from your Photos library or a card/folder next.")
         }
-        .sheet(isPresented: $showAddPhotosChooser) {
-            if let target = addPhotosTarget {
-                AddPhotosChooserView(
-                    projectName: target.name,
-                    onChooseGallery: {
-                        showAddPhotosChooser = false
-                        library.beginAddingPhotos(to: target)
-                        presentAfterDismiss { showAlbumBrowser = true }
-                    },
-                    onChooseFiles: {
-                        showAddPhotosChooser = false
-                        library.beginAddingPhotos(to: target)
-                        presentAfterDismiss { showFolderPicker = true }
-                    }
-                )
-            }
+        // Driven by the project itself (item:), not a Bool + a separately
+        // stored optional: with isPresented, the sheet's content only READ
+        // addPhotosTarget inside its own closure, so SwiftUI never re-rendered
+        // when it was set and presented the sheet with a stale nil — an empty
+        // sheet, and no way into the gallery at all.
+        .sheet(item: $addPhotosTarget) { target in
+            AddPhotosChooserView(
+                projectName: target.name,
+                onChooseGallery: {
+                    addPhotosTarget = nil
+                    library.beginAddingPhotos(to: target)
+                    presentAfterDismiss { showAlbumBrowser = true }
+                },
+                onChooseFiles: {
+                    addPhotosTarget = nil
+                    library.beginAddingPhotos(to: target)
+                    presentAfterDismiss { showFolderPicker = true }
+                }
+            )
         }
         .sheet(isPresented: $showAlbumBrowser) {
             AlbumBrowserSheet(onOpenAlbum: { albumID in openAlbum(albumID) })
@@ -252,7 +254,6 @@ struct ProjectsHomeView: View {
 
     private func beginAddingPhotos(to project: ProjectRecord) {
         addPhotosTarget = project
-        showAddPhotosChooser = true
     }
 
     /// Load the album's assets in place (nothing copied) and either add the
