@@ -23,6 +23,19 @@ struct GridScreen: View {
     /// grid itself and only apply when nothing is being peeked.
     @State private var peekZoomScale: CGFloat = 1
     @State private var peekZoomBase: CGFloat?
+    /// Set once a pinch has touched the current peek. From then on, moving
+    /// the finger pans the zoomed preview instead of dismissing it into a
+    /// drag-select, so the zoom level sticks until every finger lifts.
+    @State private var peekPinched = false
+    @State private var peekPan: CGSize = .zero
+    /// Drag translation at which the current pan stroke started, minus the
+    /// pan already applied — so a new stroke continues from where it left off.
+    @State private var peekPanAnchor: CGSize?
+    @State private var showProjectMap = false
+    @State private var showRenameProject = false
+    @State private var renameProjectText = ""
+    /// Non-nil → the typed name is already used by another project.
+    @State private var renameDuplicateName: String?
     @State private var shareCoordinator = ShareCoordinator()
     @State private var albumCreationCoordinator = AlbumCreationCoordinator()
     @State private var isOpeningAlbum = false
@@ -60,6 +73,23 @@ struct GridScreen: View {
                 .navigationTitle(library.cardName ?? "Selecta")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { toolbarContent }
+                .alert("Rename Project", isPresented: $showRenameProject) {
+                    TextField("Project name", text: $renameProjectText)
+                    Button("Rename") { renameOpenedProject() }
+                    Button("Cancel", role: .cancel) { }
+                }
+                // Duplicate name: explain, then reopen the prompt with the
+                // typed text kept so it can just be tweaked.
+                .alert("Name Already Used", isPresented: Binding(
+                    get: { renameDuplicateName != nil },
+                    set: { if !$0 { renameDuplicateName = nil } }
+                )) {
+                    Button("OK", role: .cancel) {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showRenameProject = true }
+                    }
+                } message: {
+                    Text("A project named “\(renameDuplicateName ?? "")” already exists. Choose a different name.")
+                }
                 .toolbarBackground(Theme.surface, for: .navigationBar)
                 .toolbarBackground(.visible, for: .navigationBar)
                 .toolbarColorScheme(.dark, for: .navigationBar)
@@ -68,7 +98,9 @@ struct GridScreen: View {
                         // Picks/Rejects smart folders — only meaningful inside
                         // an open project (they read each item's own flag).
                         if library.openedProject != nil {
-                            ProjectFolderTabs(library: library)
+                            // The map button lives at the end of this row (not
+                            // the nav bar, where it squeezed out the title).
+                            ProjectFolderTabs(library: library, onShowMap: { showProjectMap = true })
                         }
                         // Picking photos gets its own light filter bar
                         // (photo/video, RAW/normal) instead of the full
@@ -107,6 +139,17 @@ struct GridScreen: View {
             set: { loupeItemID = $0?.id }
         )) { target in
             LoupeScreen(library: library, startID: target.id, itemIDs: filtered.map(\.id))
+        }
+        // Maps what the grid shows (current tab + filters), so the map is
+        // filterable the same way the grid is.
+        .sheet(isPresented: $showProjectMap) {
+            ProjectMapView(
+                title: library.openedProject?.name ?? "Map",
+                items: library.filteredItems,
+                onSelect: { id in
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { loupeItemID = id }
+                }
+            )
         }
         .sheet(isPresented: $showExport) {
             // From the BatchBar (selection mode) the user means "export the
@@ -157,7 +200,7 @@ struct GridScreen: View {
             // index): if the peeked item scrolled or filtered out, the overlay
             // clears instead of hanging as a non-interactive full-screen dim.
             if let peekItemID, let item = filtered.first(where: { $0.id == peekItemID }) {
-                PeekOverlay(item: item, zoom: peekZoomScale)
+                PeekOverlay(item: item, zoom: peekZoomScale, pan: peekPan)
                     .allowsHitTesting(false)
             }
         }
@@ -299,10 +342,17 @@ struct GridScreen: View {
             unavailableView
         } else if library.items.isEmpty {
             emptyView
+        } else if filtered.isEmpty, library.isSelectingFromGallery, let progress = library.rawScanProgress {
+            rawScanView(progress)
         } else if filtered.isEmpty {
             noMatchesView
         } else {
             grid
+                .overlay(alignment: .bottom) {
+                    if library.isSelectingFromGallery, let progress = library.rawScanProgress {
+                        rawScanPill(progress)
+                    }
+                }
         }
     }
 
@@ -365,36 +415,39 @@ struct GridScreen: View {
                     // drag-select below is driven by a SEPARATE
                     // `.simultaneousGesture` at the grid level instead, which
                     // by definition can never block scrolling.
-                    // Shorter hold (0.2s, was 0.35s) while in a selecting
-                    // context — once you're already selecting, the hold is
-                    // just there to disambiguate from a scroll flick, not to
-                    // trigger a peek first, so it can be quick. Outside a
-                    // selecting context the fuller-feeling 0.35s stays,
-                    // since a long press there does something more final
-                    // (enters selection mode outright).
+                    // Shorter hold (0.2s) while selecting — there the hold
+                    // mostly disambiguates a drag-select from a scroll flick.
+                    // In the plain grid the fuller 0.35s stays. Either way a
+                    // hold opens the peek preview, which closes on release
+                    // (selection mode is entered via the Select button).
                     .onLongPressGesture(
                         minimumDuration: (library.selectionMode || library.isSelectingFromGallery) ? 0.2 : 0.35,
                         maximumDistance: 12,
                         pressing: { pressing in
-                            if !pressing && holdOriginID == item.id { endDragSelectSession() }
+                            // The press "ends" as soon as the finger moves past
+                            // maximumDistance — not only on lift. While selecting,
+                            // that movement is a drag-select, so ending here is
+                            // right. In the plain grid the peek must stay up while
+                            // the finger moves, so there it closes only on lift
+                            // (the grid-level DragGesture's onEnded below).
+                            let selecting = library.selectionMode || library.isSelectingFromGallery
+                            if !pressing && holdOriginID == item.id && (selecting || peekItemID == nil) {
+                                endDragSelectSession()
+                            }
                         }, perform: {
                         holdOriginID = item.id
-                        if library.selectionMode || library.isSelectingFromGallery {
-                            peekItemID = item.id
-                            peekZoomScale = 1
-                            Haptics.tap()
-                        } else {
-                            library.selectionMode = true
-                            library.selection = [item.id]
-                            freshSelectionEntry = true
-                            Haptics.tap()
-                        }
+                        peekItemID = item.id
+                        peekZoomScale = 1
+                        Haptics.tap()
                     })
                 }
             }
             .padding(.horizontal, 2)
             .padding(.bottom, 2)
         }
+        // A held peek owns the finger: no scrolling underneath it (a scroll
+        // would also cancel the touch before its lift is seen).
+        .scrollDisabled(peekItemID != nil)
         .coordinateSpace(name: gridSpace)
         .onPreferenceChange(CellFrameKey.self) { cellFrames = $0 }
         // A second single-finger gesture on top of the ScrollView's own pan,
@@ -418,6 +471,11 @@ struct GridScreen: View {
                     // branch just dismissed the peek outright, "losing" it
                     // the moment a second finger touched down to zoom.
                     if peekItemID != nil {
+                        peekPinched = true
+                        // Fingers moving during the pinch shift the drag
+                        // translation; re-anchor so the image doesn't jump
+                        // when the pinch ends and one finger keeps panning.
+                        peekPanAnchor = nil
                         if peekZoomBase == nil { peekZoomBase = peekZoomScale }
                         if let base = peekZoomBase {
                             peekZoomScale = min(5, max(1, base * value.magnification))
@@ -450,6 +508,19 @@ struct GridScreen: View {
     /// and nothing more.
     private func handleGridDrag(_ value: DragGesture.Value) {
         guard let originID = holdOriginID else { return }
+        // A pinched peek stays up at its zoom: movement pans it instead.
+        if peekPinched, peekItemID != nil {
+            if peekZoomBase != nil { return } // still pinching
+            let t = value.translation
+            if peekPanAnchor == nil {
+                peekPanAnchor = CGSize(width: t.width - peekPan.width, height: t.height - peekPan.height)
+            }
+            if let anchor = peekPanAnchor {
+                peekPan = CGSize(width: t.width - anchor.width, height: t.height - anchor.height)
+            }
+            return
+        }
+        // Outside selection, a held finger just keeps the peek open.
         guard library.selectionMode || library.isSelectingFromGallery else { return }
         let moved = hypot(value.translation.width, value.translation.height)
         guard moved >= 5 else { return }
@@ -468,6 +539,9 @@ struct GridScreen: View {
     private func endDragSelectSession() {
         peekItemID = nil
         peekZoomScale = 1
+        peekPinched = false
+        peekPan = .zero
+        peekPanAnchor = nil
         isDragSelecting = false
         dragSelectTouchedIDs = []
         holdOriginID = nil
@@ -597,6 +671,35 @@ struct GridScreen: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private func rawScanView(_ progress: (done: Int, total: Int)) -> some View {
+        VStack(spacing: 12) {
+            ProgressView(value: Double(progress.done), total: Double(max(progress.total, 1)))
+                .tint(Theme.accent)
+                .frame(width: 180)
+            Text("Checking for RAW…")
+                .font(.headline)
+                .foregroundStyle(Theme.textPrimary)
+            Text(verbatim: "\(progress.done) of \(progress.total)")
+                .font(.subheadline.monospacedDigit())
+                .foregroundStyle(Theme.textSecondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Small "still checking" note over the grid while matches fill in.
+    private func rawScanPill(_ progress: (done: Int, total: Int)) -> some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small).tint(Theme.textSecondary)
+            Text(verbatim: "Checking for RAW… \(progress.done) of \(progress.total)")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(Theme.textSecondary)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 7)
+        .background(Theme.surfaceElevated, in: Capsule())
+        .padding(.bottom, 10)
+        .allowsHitTesting(false)
+    }
+
     private var noMatchesView: some View {
         VStack(spacing: 12) {
             Text("No shots match the filter")
@@ -618,6 +721,16 @@ struct GridScreen: View {
     // MARK: Toolbar
 
     @ToolbarContentBuilder
+    private func renameOpenedProject() {
+        guard let project = library.openedProject else { return }
+        let name = renameProjectText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty, library.isProjectNameTaken(name, excluding: project) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { renameDuplicateName = name }
+            return
+        }
+        library.renameProject(project, to: name)
+    }
+
     private var toolbarContent: some ToolbarContent {
         Group {
             if library.isSelectingFromGallery {
@@ -663,7 +776,13 @@ struct GridScreen: View {
                         Button { showSwitchProject = true } label: {
                             Label("Switch Project…", systemImage: "folder")
                         }
-                        if library.openedProject != nil {
+                        if let project = library.openedProject {
+                            Button {
+                                renameProjectText = project.name
+                                showRenameProject = true
+                            } label: {
+                                Label("Rename Project…", systemImage: "pencil")
+                            }
                             Button { library.rescan() } label: {
                                 Label("Refresh", systemImage: "arrow.clockwise")
                             }
@@ -819,13 +938,26 @@ struct SourceSelectBar: View {
 /// project is open.
 struct ProjectFolderTabs: View {
     @Bindable var library: Library
+    var onShowMap: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 6) {
             tab("All Photos", folder: .all)
             tab("Picks", folder: .picks)
+            tab("Not Picks", folder: .notPicks)
             tab("Rejects", folder: .rejects)
             Spacer(minLength: 0)
+            if let onShowMap {
+                Button(action: onShowMap) {
+                    Image(systemName: "map")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Theme.textSecondary)
+                        .frame(width: 32, height: 28)
+                        .background(Theme.surfaceElevated, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Show on map")
+            }
         }
         .padding(.horizontal, 12)
         .padding(.top, 8)
@@ -1081,6 +1213,7 @@ struct BatchBar: View {
 struct PeekOverlay: View {
     let item: CardItem
     var zoom: CGFloat = 1
+    var pan: CGSize = .zero
     @State private var image: UIImage?
 
     var body: some View {
@@ -1092,6 +1225,7 @@ struct PeekOverlay: View {
                         .resizable()
                         .scaledToFit()
                         .scaleEffect(zoom)
+                        .offset(pan)
                 } else {
                     ProgressView().tint(.white)
                 }

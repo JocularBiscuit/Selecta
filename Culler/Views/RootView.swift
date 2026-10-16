@@ -64,9 +64,18 @@ struct ProjectsHomeView: View {
     @State private var showNewProjectAlert = false
     @State private var newProjectName = ""
     @State private var addPhotosTarget: ProjectRecord?
+    @State private var renameTarget: ProjectRecord?
+    @State private var renameText = ""
+    /// Non-nil → the "name already used" alert is up for this name.
+    @State private var duplicateName: String?
+    /// Which prompt to reopen after it: a rename (this project) or, when nil,
+    /// the New Project prompt.
+    @State private var retryRenameTarget: ProjectRecord?
     @State private var showAlbumBrowser = false
     @State private var isOpeningAlbum = false
     @State private var showGuideSheet = false
+    @State private var showAllProjectsMap = false
+    @AppStorage(SettingsKeys.projectSort) private var projectSort: ProjectSort = .recentlyOpened
 
     var body: some View {
         NavigationStack {
@@ -104,6 +113,30 @@ struct ProjectsHomeView: View {
                     }
                     .tint(Theme.textSecondary)
                 }
+                if projects.count > 1 {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Menu {
+                            Picker("Sort Projects", selection: $projectSort) {
+                                ForEach(ProjectSort.allCases) { sort in
+                                    Label(sort.rawValue, systemImage: sort.systemImage).tag(sort)
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "arrow.up.arrow.down.circle")
+                                .font(.system(size: 18))
+                        }
+                        .tint(Theme.textSecondary)
+                    }
+                }
+                if !projects.isEmpty {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { showAllProjectsMap = true } label: {
+                            Image(systemName: "map")
+                                .font(.system(size: 17))
+                        }
+                        .tint(Theme.textSecondary)
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         newProjectName = ""
@@ -119,6 +152,12 @@ struct ProjectsHomeView: View {
         .preferredColorScheme(.dark)
         .onAppear { reload() }
         .onChange(of: library.scanGeneration) { _, _ in reload() }
+        .onChange(of: projectSort) { _, _ in reload() }
+        .sheet(isPresented: $showAllProjectsMap) {
+            AllProjectsMapView(projects: projects) { project in
+                presentAfterDismiss { library.openProject(project) }
+            }
+        }
         .sheet(isPresented: $showGuideSheet) {
             GuideSheet()
         }
@@ -128,6 +167,31 @@ struct ProjectsHomeView: View {
             Button("Cancel", role: .cancel) { newProjectName = "" }
         } message: {
             Text("You'll pick photos from your Photos library or a card/folder next.")
+        }
+        .alert("Rename Project", isPresented: Binding(
+            get: { renameTarget != nil },
+            set: { if !$0 { renameTarget = nil } }
+        )) {
+            TextField("Project name", text: $renameText)
+            Button("Rename") { renameProject() }
+            Button("Cancel", role: .cancel) { renameTarget = nil }
+        }
+        // Duplicate name: explain, then reopen the prompt that was used with
+        // the typed text still in it so it can just be tweaked.
+        .alert("Name Already Used", isPresented: Binding(
+            get: { duplicateName != nil },
+            set: { if !$0 { duplicateName = nil } }
+        )) {
+            Button("OK", role: .cancel) {
+                duplicateName = nil
+                let retry = retryRenameTarget
+                retryRenameTarget = nil
+                presentAfterDismiss {
+                    if let retry { renameTarget = retry } else { showNewProjectAlert = true }
+                }
+            }
+        } message: {
+            Text("A project named “\(duplicateName ?? "")” already exists. Choose a different name.")
         }
         // Driven by the project itself (item:), not a Bool + a separately
         // stored optional: with isPresented, the sheet's content only READ
@@ -186,6 +250,10 @@ struct ProjectsHomeView: View {
                             pickCount: library.pickCount(of: project),
                             onOpen: { library.openProject(project) },
                             onAddPhotos: { beginAddingPhotos(to: project) },
+                            onRename: {
+                                renameText = project.name
+                                renameTarget = project
+                            },
                             onDelete: { library.deleteProject(project); reload() }
                         )
                     }
@@ -239,17 +307,36 @@ struct ProjectsHomeView: View {
     // MARK: Actions
 
     private func reload() {
-        projects = library.projects()
+        projects = projectSort.sorted(library.projects())
     }
 
     private func createProject() {
         let name = newProjectName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { newProjectName = ""; return }
+        if library.isProjectNameTaken(name) {
+            // Keep the typed text so the reopened prompt can be tweaked.
+            retryRenameTarget = nil
+            presentAfterDismiss { duplicateName = name }
+            return
+        }
         newProjectName = ""
-        guard !name.isEmpty else { return }
         let project = library.createProject(named: name)
         reload()
         // A brand-new project is empty — go straight to picking its photos.
         beginAddingPhotos(to: project)
+    }
+
+    private func renameProject() {
+        guard let project = renameTarget else { return }
+        renameTarget = nil
+        let name = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty, library.isProjectNameTaken(name, excluding: project) {
+            retryRenameTarget = project
+            presentAfterDismiss { duplicateName = name }
+            return
+        }
+        library.renameProject(project, to: name)
+        reload()
     }
 
     private func beginAddingPhotos(to project: ProjectRecord) {
@@ -291,6 +378,7 @@ private struct ProjectCard: View {
     let pickCount: Int
     var onOpen: () -> Void
     var onAddPhotos: () -> Void
+    var onRename: () -> Void
     var onDelete: () -> Void
 
     /// Up to 4 tiles for the collage; fewer photos just fill fewer tiles.
@@ -320,6 +408,9 @@ private struct ProjectCard: View {
                     }
                     Button { onAddPhotos() } label: {
                         Label("Add Photos…", systemImage: "plus.rectangle.on.folder")
+                    }
+                    Button { onRename() } label: {
+                        Label("Rename…", systemImage: "pencil")
                     }
                     Divider()
                     Button(role: .destructive) { onDelete() } label: {

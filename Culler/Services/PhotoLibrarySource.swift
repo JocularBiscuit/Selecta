@@ -251,10 +251,79 @@ final class PhotoLibrarySource {
     /// Whether an asset has a RAW resource (a RAW+JPEG pair or a RAW-only
     /// shot) — used to decide whether to offer the RAW/JPEG/Both share chooser.
     func assetHasRaw(_ assetID: String) async -> Bool {
+        if let cached = cachedRaw(assetID) { return cached }
         guard let asset = fetchAsset(assetID) else { return false }
-        return PHAssetResource.assetResources(for: asset).contains { resource in
-            resource.type == .alternatePhoto || Self.isRawType(resource.uniformTypeIdentifier)
+        let isRaw = Self.hasRawResource(asset)
+        storeRaw([assetID: isRaw])
+        return isRaw
+    }
+
+    /// RAW answers for many assets at once — the efficient path for a whole
+    /// album (Recents can hold tens of thousands). One PHAsset fetch per
+    /// batch of identifiers instead of one per asset, and answers are
+    /// remembered for the session (an asset's resources don't change), so
+    /// re-filtering or reopening the album is instant. Synchronous: call it
+    /// off the main actor. Unknown identifiers come back as not-RAW.
+    func rawFlags(for assetIDs: [String]) -> [String: Bool] {
+        var result: [String: Bool] = [:]
+        var missing: [String] = []
+        rawCacheLock.lock()
+        for id in assetIDs {
+            if let cached = rawCache[id] { result[id] = cached } else { missing.append(id) }
         }
+        rawCacheLock.unlock()
+        guard !missing.isEmpty else { return result }
+
+        // Stored ids may be lowercased (see fetchAsset); fetch by the
+        // uppercased form and map answers back to whatever was asked.
+        var askedByUpper: [String: [String]] = [:]
+        for id in missing { askedByUpper[id.uppercased(), default: []].append(id) }
+        var found: [String: Bool] = [:]
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: Array(askedByUpper.keys), options: nil)
+        assets.enumerateObjects { asset, _, _ in
+            let isRaw = Self.hasRawResource(asset)
+            for asked in askedByUpper[asset.localIdentifier.uppercased()] ?? [] { found[asked] = isRaw }
+        }
+        for id in missing where found[id] == nil { found[id] = false }
+        storeRaw(found)
+        result.merge(found) { _, new in new }
+        return result
+    }
+
+    /// Capture locations for many assets at once, straight off PHAsset (the
+    /// library's own index — no image download). Assets without a location
+    /// are simply absent. Synchronous: call it off the main actor.
+    func coordinates(for assetIDs: [String]) -> [String: GeoPoint] {
+        var askedByUpper: [String: [String]] = [:]
+        for id in assetIDs { askedByUpper[id.uppercased(), default: []].append(id) }
+        var result: [String: GeoPoint] = [:]
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: Array(askedByUpper.keys), options: nil)
+        assets.enumerateObjects { asset, _, _ in
+            guard let c = asset.location?.coordinate, c.latitude != 0 || c.longitude != 0 else { return }
+            let point = GeoPoint(latitude: c.latitude, longitude: c.longitude)
+            for asked in askedByUpper[asset.localIdentifier.uppercased()] ?? [] { result[asked] = point }
+        }
+        return result
+    }
+
+    private static func hasRawResource(_ asset: PHAsset) -> Bool {
+        guard asset.mediaType == .image else { return false }
+        return PHAssetResource.assetResources(for: asset).contains { resource in
+            resource.type == .alternatePhoto || isRawType(resource.uniformTypeIdentifier)
+        }
+    }
+
+    private let rawCacheLock = NSLock()
+    private var rawCache: [String: Bool] = [:]
+
+    private func cachedRaw(_ assetID: String) -> Bool? {
+        rawCacheLock.lock(); defer { rawCacheLock.unlock() }
+        return rawCache[assetID]
+    }
+
+    private func storeRaw(_ flags: [String: Bool]) {
+        rawCacheLock.lock(); defer { rawCacheLock.unlock() }
+        rawCache.merge(flags) { _, new in new }
     }
 
     /// The asset's real original filename (e.g. "IMG_1234.HEIC"), straight

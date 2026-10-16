@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import Photos
 
 /// Send the actual original file(s) to other apps via the iOS share sheet —
 /// "Open in Lightroom" for a RAW, AirDrop, Files, Messages, etc.
@@ -194,6 +195,10 @@ final class AlbumCreationCoordinator {
     /// Non-nil → show the "name this album" prompt for these items.
     var pendingItems: [CardItem]?
     var resultMessage: String?
+    /// Non-nil → an album with this name already exists; the flow explains
+    /// and then reopens the prompt for `retryItems`.
+    var duplicateName: String?
+    private var retryItems: [CardItem]?
 
     func begin(_ items: [CardItem]) {
         guard !items.isEmpty, !isWorking else { return }
@@ -202,11 +207,41 @@ final class AlbumCreationCoordinator {
 
     func cancel() { pendingItems = nil }
 
-    func create(named name: String) {
-        guard let items = pendingItems else { return }
+    /// Reopens the name prompt for the same items after a duplicate name.
+    func retryAfterDuplicate() {
+        duplicateName = nil
+        pendingItems = retryItems
+        retryItems = nil
+    }
+
+    /// Whether the Photos library already has an album with this title
+    /// (trimmed, case-insensitive — the same rule projects use).
+    static func albumNameTaken(_ name: String) -> Bool {
+        let key = Library.nameKey(name)
+        var taken = false
+        let albums = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: nil)
+        albums.enumerateObjects { collection, _, stop in
+            if let title = collection.localizedTitle, Library.nameKey(title) == key {
+                taken = true
+                stop.pointee = true
+            }
+        }
+        return taken
+    }
+
+    /// Returns false when the name was refused as a duplicate (the prompt's
+    /// text should then be kept for the retry).
+    @discardableResult
+    func create(named name: String) -> Bool {
+        guard let items = pendingItems else { return true }
         pendingItems = nil
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return true }
+        if Self.albumNameTaken(trimmed) {
+            retryItems = items
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { self.duplicateName = trimmed }
+            return false
+        }
         isWorking = true
         Task {
             do {
@@ -220,6 +255,7 @@ final class AlbumCreationCoordinator {
                 resultMessage = "Couldn't create the album: \(error.localizedDescription)"
             }
         }
+        return true
     }
 }
 
@@ -235,8 +271,7 @@ struct AlbumCreationFlow: ViewModifier {
             )) {
                 TextField("Album name", text: $name)
                 Button("Create") {
-                    coordinator.create(named: name)
-                    name = ""
+                    if coordinator.create(named: name) { name = "" }
                 }
                 Button("Cancel", role: .cancel) {
                     coordinator.cancel()
@@ -245,6 +280,18 @@ struct AlbumCreationFlow: ViewModifier {
             } message: {
                 let count = coordinator.pendingItems?.count ?? 0
                 Text("Creates a new album in your Photos library (not a Shared Album) with the selected \(count) photo\(count == 1 ? "" : "s").")
+            }
+            .alert("Name Already Used", isPresented: Binding(
+                get: { coordinator.duplicateName != nil },
+                set: { if !$0 { coordinator.duplicateName = nil } }
+            )) {
+                Button("OK", role: .cancel) {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                        coordinator.retryAfterDuplicate()
+                    }
+                }
+            } message: {
+                Text("An album named “\(coordinator.duplicateName ?? "")” already exists in Photos. Choose a different name.")
             }
             .alert("Create Album", isPresented: Binding(
                 get: { coordinator.resultMessage != nil },

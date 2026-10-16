@@ -202,10 +202,56 @@ final class ProjectRecord {
     /// are unique within a project but may have gaps (see
     /// Library.placePostOrder for how collisions shift).
     var postOrder: [String: Int] = [:]
+    /// Last time the project was opened (nil = never) — for "Recently Opened"
+    /// sorting on the overview.
+    var lastOpenedAt: Date? = nil
 
     init(name: String) {
         self.name = name
         self.createdAt = Date()
+    }
+}
+
+/// How the project overview orders its cards. Raw values are what's stored
+/// in settings and shown in the sort menu.
+enum ProjectSort: String, CaseIterable, Identifiable {
+    case recentlyOpened = "Recently Opened"
+    case newest = "Newest"
+    case oldest = "Oldest"
+    case name = "Name"
+    case photoCount = "Most Photos"
+
+    var id: String { rawValue }
+
+    var systemImage: String {
+        switch self {
+        case .recentlyOpened: return "clock"
+        case .newest: return "arrow.down"
+        case .oldest: return "arrow.up"
+        case .name: return "textformat"
+        case .photoCount: return "photo.stack"
+        }
+    }
+
+    /// Ties fall back to name, so the order is always stable.
+    func sorted(_ projects: [ProjectRecord]) -> [ProjectRecord] {
+        projects.sorted { a, b in
+            let byName = a.name.localizedStandardCompare(b.name) == .orderedAscending
+            switch self {
+            case .recentlyOpened:
+                // Never-opened projects count by their creation time.
+                let da = a.lastOpenedAt ?? a.createdAt, db = b.lastOpenedAt ?? b.createdAt
+                return da == db ? byName : da > db
+            case .newest:
+                return a.createdAt == b.createdAt ? byName : a.createdAt > b.createdAt
+            case .oldest:
+                return a.createdAt == b.createdAt ? byName : a.createdAt < b.createdAt
+            case .name:
+                return byName
+            case .photoCount:
+                return a.itemIDs.count == b.itemIDs.count ? byName : a.itemIDs.count > b.itemIDs.count
+            }
+        }
     }
 }
 

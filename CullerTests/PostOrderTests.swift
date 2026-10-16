@@ -209,4 +209,61 @@ final class PostOrderTests: XCTestCase {
         library.selection = Set([id("C"), id("A"), id("B")])
         XCTAssertEqual(library.orderedSelection, [id("A"), id("B"), id("C")])
     }
+
+    // MARK: Renaming
+
+    func testRenameKeepsPhotosAndNumbersAndTrimsWhitespace() throws {
+        let (library, project) = try makeLibrary(photos: ["A", "B"])
+        library.placePostOrder(ids: [id("A")], startingAt: 1)
+        library.renameProject(project, to: "  Summer Post  ")
+        XCTAssertEqual(project.name, "Summer Post")
+        XCTAssertEqual(project.itemIDs.count, 2)
+        XCTAssertEqual(project.postOrder[id("A")], 1)
+    }
+
+    func testRenameToBlankIsIgnored() throws {
+        let (library, project) = try makeLibrary(photos: ["A"])
+        library.renameProject(project, to: "   ")
+        XCTAssertEqual(project.name, "Post")
+    }
+
+    // MARK: Unique names
+
+    func testProjectNamesAreUniqueIgnoringCaseAndSpaces() throws {
+        let (library, project) = try makeLibrary(photos: ["A"])
+        XCTAssertTrue(library.isProjectNameTaken("Post"))
+        XCTAssertTrue(library.isProjectNameTaken("  post "))
+        XCTAssertFalse(library.isProjectNameTaken("Posts"))
+        // A project's own name doesn't count against itself (rename to same).
+        XCTAssertFalse(library.isProjectNameTaken("POST", excluding: project))
+    }
+
+    func testRenameToAnotherProjectsNameIsRefused() throws {
+        let (library, project) = try makeLibrary(photos: ["A"])
+        let other = library.createProject(named: "Holiday")
+        XCTAssertFalse(library.renameProject(other, to: "post"))
+        XCTAssertEqual(other.name, "Holiday")
+        XCTAssertTrue(library.renameProject(project, to: "POST"))
+        XCTAssertEqual(project.name, "POST")
+    }
+
+    // MARK: Project sorting
+
+    func testProjectSortOrders() throws {
+        let (library, post) = try makeLibrary(photos: ["A", "B", "C"])  // "Post", 3 photos
+        let alpha = library.createProject(named: "alpha")
+        alpha.createdAt = post.createdAt.addingTimeInterval(10)
+        let zed = library.createProject(named: "Zed")
+        zed.createdAt = post.createdAt.addingTimeInterval(20)
+        zed.itemIDs = ["x"]
+        post.lastOpenedAt = post.createdAt.addingTimeInterval(30)
+        let all = [alpha, zed, post]
+
+        XCTAssertEqual(ProjectSort.name.sorted(all).map(\.name), ["alpha", "Post", "Zed"])
+        XCTAssertEqual(ProjectSort.newest.sorted(all).map(\.name), ["Zed", "alpha", "Post"])
+        XCTAssertEqual(ProjectSort.oldest.sorted(all).map(\.name), ["Post", "alpha", "Zed"])
+        XCTAssertEqual(ProjectSort.photoCount.sorted(all).map(\.name), ["Post", "Zed", "alpha"])
+        // Opened most recently wins; never-opened ones fall back to creation.
+        XCTAssertEqual(ProjectSort.recentlyOpened.sorted(all).map(\.name), ["Post", "Zed", "alpha"])
+    }
 }

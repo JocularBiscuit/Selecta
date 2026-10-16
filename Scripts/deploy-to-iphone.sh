@@ -12,12 +12,13 @@ export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DD="/tmp/culler-device-dd"
 
-# First PHYSICAL device that is connected/paired. Matching only "physical"
-# rows matters: simulators are listed too, and a modern iPhone UDID
+# First REAL device that is connected/paired. Simulators are listed too
+# (marked "simulated"; newer Xcode leaves real devices' column blank rather
+# than writing "physical"), so drop simulator rows — a modern iPhone UDID
 # (00008110-XXXXXXXXXXXXXXXX) is not UUID-shaped, so a plain UUID grep
 # would pick a simulator instead. "unavailable" rows are skipped.
 DEVICE_ID=$(xcrun devicectl list devices 2>/dev/null \
-  | grep -E ' physical ' | grep -E ' (connected|available \(paired\)) ' \
+  | grep -v ' simulated' | grep -E ' (connected|available \(paired\)) ' \
   | grep -oE '[0-9A-Fa-f]{8}-[0-9A-Fa-f-]{16,28}' | head -1)
 if [[ -z "$DEVICE_ID" ]]; then
   echo "No paired iPhone found. Plug it in, unlock it, tap Trust, and retry."

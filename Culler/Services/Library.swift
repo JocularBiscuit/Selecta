@@ -26,7 +26,7 @@ final class Library {
     /// Sub-view within an open project: everything, or the automatic
     /// Picks/Rejects smart folders (derived from each item's flag — no
     /// separate assignment step).
-    enum ProjectFolder: Equatable { case all, picks, rejects }
+    enum ProjectFolder: Equatable { case all, picks, notPicks, rejects }
     var projectFolder: ProjectFolder = .all { didSet { pruneSelectionToFiltered() } }
 
     /// Filters shown only while picking photos from a source (`.select`
@@ -34,7 +34,18 @@ final class Library {
     enum GalleryMediaFilter: Equatable { case all, photosOnly, videosOnly }
     enum GalleryRawFilter: Equatable { case all, rawOnly, normalOnly }
     var galleryMediaFilter: GalleryMediaFilter = .all { didSet { pruneSelectionToFiltered() } }
-    var galleryRawFilter: GalleryRawFilter = .all { didSet { pruneSelectionToFiltered() } }
+    var galleryRawFilter: GalleryRawFilter = .all {
+        didSet {
+            pruneSelectionToFiltered()
+            // The RAW/Normal filters need every item's RAW status, not just
+            // the visible cells' — otherwise unchecked items are hidden,
+            // never scroll into view, and never get checked ("No matches").
+            if galleryRawFilter != .all { backfillRawFlags() }
+        }
+    }
+    /// (checked, total) while a whole-album RAW check runs; nil otherwise.
+    /// Drives the "Checking for RAW…" progress instead of an empty grid.
+    private(set) var rawScanProgress: (done: Int, total: Int)?
 
     private(set) var items: [CardItem] = []
     private(set) var cardName: String?
@@ -213,6 +224,7 @@ final class Library {
             switch projectFolder {
             case .all: break
             case .picks: if item.flag != .pick { return false }
+            case .notPicks: if item.flag == .pick { return false }
             case .rejects: if item.flag != .reject { return false }
             }
             if browseMode == .select {
@@ -305,6 +317,18 @@ final class Library {
     func projects() -> [ProjectRecord] {
         let descriptor = FetchDescriptor<ProjectRecord>(sortBy: [SortDescriptor(\.createdAt)])
         return (try? context.fetch(descriptor)) ?? []
+    }
+
+    /// True when another project already uses this name. Compared trimmed and
+    /// case-insensitively, so "Summer" and " summer " count as the same.
+    func isProjectNameTaken(_ name: String, excluding project: ProjectRecord? = nil) -> Bool {
+        let key = Self.nameKey(name)
+        return projects().contains { $0 !== project && Self.nameKey($0.name) == key }
+    }
+
+    static func nameKey(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive], locale: nil)
     }
 
     @discardableResult
@@ -417,6 +441,20 @@ final class Library {
             }
         }
         if changed { itemsRevision += 1 }
+    }
+
+    /// Renames a project in place (membership, flags and numbers untouched).
+    /// Blank names and names another project already uses are refused
+    /// (returns false), so a project can never end up nameless or ambiguous.
+    @discardableResult
+    func renameProject(_ project: ProjectRecord, to newName: String) -> Bool {
+        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !isProjectNameTaken(name, excluding: project) else { return false }
+        guard name != project.name else { return true }
+        project.name = name
+        try? context.save()
+        if openedProject === project { cardName = name }
+        return true
     }
 
     func deleteProject(_ project: ProjectRecord) {
@@ -597,6 +635,8 @@ final class Library {
             loadError = "This project is empty. Add photos from your Photos library or a card/folder."
             return
         }
+        project.lastOpenedAt = Date()
+        try? context.save()
 
         let token = UUID()
         openRequestToken = token
@@ -965,46 +1005,44 @@ final class Library {
     /// the user opens a different card/album meanwhile.
     func backfillRawFlags() {
         let key = cardKey
-        let targets: [(id: String, assetID: String)] = items.compactMap { item in
-            guard let assetID = item.assetLocalID, item.assetIsRaw == nil else { return nil }
-            return (item.id, assetID)
-        }
-        guard !targets.isEmpty else { return }
-        Task.detached(priority: .utility) { [weak self] in
-            // 8-way concurrent PHAssetResource lookups, but the `items`
-            // mutation (and the cache-invalidating revision bump it
-            // triggers) is applied only every ~32 results, not every 8 —
-            // for a large album this is the difference between a handful of
-            // cheap cache invalidations and hundreds of them.
-            var pending: [(String, Bool)] = []
+        // Newest first, so the top of a date-sorted album fills in first.
+        let targets: [(id: String, assetID: String)] = items
+            .filter { $0.assetLocalID != nil && $0.assetIsRaw == nil }
+            .sorted { $0.fileDate > $1.fileDate }
+            .map { ($0.id, $0.assetLocalID!) }
+        guard !targets.isEmpty, rawBackfillKey != key else { return }
+        rawBackfillKey = key
+        rawScanProgress = (0, targets.count)
+        Task.detached(priority: .userInitiated) { [weak self] in
+            // Batches of 300: one PHAsset fetch per batch (see
+            // PhotoLibrarySource.rawFlags), and one `items` mutation + cache
+            // invalidation per batch rather than per asset.
             var index = 0
             while index < targets.count {
-                let chunk = Array(targets[index..<min(index + 8, targets.count)])
+                let chunk = targets[index..<min(index + 300, targets.count)]
                 index += chunk.count
-                let found = await withTaskGroup(of: (String, Bool).self) { group -> [(String, Bool)] in
-                    for target in chunk {
-                        group.addTask {
-                            let isRaw = await PhotoLibrarySource.shared.assetHasRaw(target.assetID)
-                            return (target.id, isRaw)
-                        }
-                    }
-                    var out: [(String, Bool)] = []
-                    for await pair in group { out.append(pair) }
-                    return out
-                }
-                pending += found
-                guard pending.count >= 32 || index >= targets.count else { continue }
-                let toApply = pending
-                pending = []
+                let flags = PhotoLibrarySource.shared.rawFlags(for: chunk.map(\.assetID))
+                let pairs = chunk.map { ($0.id, flags[$0.assetID] ?? false) }
+                let done = index
                 let aborted = await MainActor.run { () -> Bool in
                     guard let self, self.cardKey == key else { return true }
-                    self.applyRawFlags(toApply)
+                    self.applyRawFlags(pairs)
+                    self.rawScanProgress = done < targets.count ? (done, targets.count) : nil
                     return false
                 }
-                if aborted { return }
+                if aborted { break }
+            }
+            await MainActor.run {
+                guard let self, self.rawBackfillKey == key else { return }
+                self.rawBackfillKey = nil
+                if self.cardKey != key { self.rawScanProgress = nil }
             }
         }
     }
+
+    /// Card/album key of the RAW backfill currently running, so re-picking
+    /// the RAW filter mid-scan doesn't start a second one.
+    @ObservationIgnored private var rawBackfillKey: String?
 
     private func applyRawFlags(_ pairs: [(String, Bool)]) {
         guard !pairs.isEmpty else { return }
@@ -1282,6 +1320,7 @@ enum SettingsKeys {
     static let thumbSize = "thumbSize"
     static let hapticsEnabled = "hapticsEnabled"
     static let followSystemAppearance = "followSystemAppearance"
+    static let projectSort = "projectSort"
     static let histogramVisible = "histogramVisible"
     static let loupeBlackBackground = "loupeBlackBackground"
     static let exportDestBookmark = "exportDestBookmark"

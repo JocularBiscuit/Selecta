@@ -7,6 +7,19 @@ import AVFoundation
 
 /// Lightweight image metadata read via ImageIO without decoding pixels.
 /// Everything is optional — missing EXIF fields simply stay nil.
+/// A photo's capture location (signed degrees: south/west negative).
+struct GeoPoint: Equatable, Hashable, Sendable {
+    var latitude: Double
+    var longitude: Double
+
+    /// "48.1374° N, 11.5755° E"
+    var displayText: String {
+        String(format: "%.4f° %@, %.4f° %@",
+               abs(latitude), latitude < 0 ? "S" : "N",
+               abs(longitude), longitude < 0 ? "W" : "E")
+    }
+}
+
 struct ImageMeta: Equatable, Sendable {
     var pixelSize: CGSize?
     var captureDate: Date?
@@ -22,6 +35,7 @@ struct ImageMeta: Equatable, Sendable {
     var lensModel: String?          // Exif "LensModel"
     var exposureBias: Double?       // EV compensation
     var gpsCoordinateText: String?  // "37.3349° N, 122.0090° W", if present
+    var coordinate: GeoPoint?       // signed lat/lon for maps, if present
     var colorSpace: String?         // "sRGB", "Adobe RGB", …
     var orientation: Int?           // Exif/TIFF orientation tag (1–8)
 }
@@ -365,6 +379,10 @@ final class ThumbnailStore: @unchecked Sendable {
             let latRef = (gps[kCGImagePropertyGPSLatitudeRef] as? String) ?? "N"
             let lonRef = (gps[kCGImagePropertyGPSLongitudeRef] as? String) ?? "E"
             meta.gpsCoordinateText = String(format: "%.4f° %@, %.4f° %@", lat, latRef, lon, lonRef)
+            meta.coordinate = GeoPoint(
+                latitude: latRef.uppercased() == "S" ? -lat : lat,
+                longitude: lonRef.uppercased() == "W" ? -lon : lon
+            )
         }
         return meta
     }

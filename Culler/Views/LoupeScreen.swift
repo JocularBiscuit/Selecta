@@ -29,6 +29,7 @@ struct LoupeScreen: View {
     @State private var isZoomed = false
     @State private var chromeVisible = true
     @State private var showInfo = false
+    @State private var showProjectMap = false
     @State private var histogram: HistogramData?
     @State private var metaCache: [String: ImageMeta] = [:]
     @State private var sizeCache: [String: Int64] = [:]   // video file sizes
@@ -236,10 +237,19 @@ struct LoupeScreen: View {
         .onAppear {
             index = itemIDs.firstIndex(of: startID) ?? 0
         }
+        .sheet(isPresented: $showProjectMap) {
+            ProjectMapView(
+                title: library.openedProject?.name ?? "Map",
+                items: itemIDs.compactMap { library.item(id: $0) },
+                onSelect: { id in
+                    if let i = itemIDs.firstIndex(of: id) { index = i }
+                }
+            )
+        }
         .sheet(isPresented: $showInfo) {
             if let item = currentItem {
                 InfoSheet(item: item)
-                    .presentationDetents([.medium])
+                    .presentationDetents([.medium, .large])
             }
         }
         .sheet(isPresented: $showExport) {
@@ -560,42 +570,13 @@ struct LoupeScreen: View {
 
             Spacer(minLength: 4)
 
-            if let item = currentItem {
-                VStack(spacing: 2) {
-                    // Minimal by default — just the name + a short date. Tap
-                    // ⓘ for the index/type/dimensions/date line plus the info
-                    // overlay.
-                    titleText(for: item)
-                        .font(.caption.weight(.semibold).monospaced())
-                        .lineLimit(1)
-                    if infoOverlayVisible {
-                        HStack(spacing: 5) {
-                            Text(verbatim: "\(index + 1) of \(itemIDs.count)")
-                                .foregroundStyle(Theme.textSecondary)
-                            typeBadge(for: item)
-                            if let meta = metaCache[item.id] {
-                                if let size = meta.pixelSize {
-                                    // String(Int(...)) on purpose: no locale
-                                    // grouping separators ("1616", not "1.616").
-                                    Text(String(Int(size.width)) + "×" + String(Int(size.height)))
-                                        .foregroundStyle(Theme.textTertiary)
-                                        .layoutPriority(1)
-                                }
-                                // For Photos-library assets the title already IS
-                                // the capture date; don't show it twice.
-                                if item.assetLocalID == nil, let date = meta.captureDate {
-                                    Text(date.formatted(date: .abbreviated, time: .shortened))
-                                        .foregroundStyle(Theme.textTertiary)
-                                }
-                            }
-                        }
-                        .font(.caption2)
-                        .lineLimit(1)
-                    }
-                }
-                .padding(.top, 4)
+            // No text up here — between the buttons there's no room to show
+            // it readably (name, date, position live in the info box, ⓘ).
+            // Just the project map.
+            Spacer(minLength: 4)
+            if library.openedProject != nil {
+                ghostButton("map") { showProjectMap = true }
             }
-
             Spacer(minLength: 4)
 
             HStack(spacing: 6) {
@@ -682,7 +663,7 @@ struct LoupeScreen: View {
     /// fetched lazily (see `filenameCache`/`loadMetadata`) — until that
     /// arrives, the date shows alone rather than the meaningless UUID prefix.
     private func titleText(for item: CardItem) -> Text {
-        let shortDate = item.fileDate.formatted(date: .abbreviated, time: .omitted)
+        let shortDate = LoupeDate.day(item.fileDate)
         let name: String? = item.assetLocalID != nil ? filenameCache[item.id] : item.baseName
         guard let name else {
             return Text(shortDate).foregroundColor(Theme.textPrimary)
@@ -737,13 +718,24 @@ struct LoupeScreen: View {
         return VStack(alignment: .leading, spacing: 3) {
             titleText(for: item)
                 .font(.caption.weight(.semibold).monospaced())
+            HStack(spacing: 5) {
+                Text(verbatim: "\(index + 1) of \(itemIDs.count)")
+                    .foregroundStyle(Theme.textSecondary)
+                typeBadge(for: item)
+                // The title has the day; a file's capture time adds the time.
+                if item.assetLocalID == nil, let date = meta?.captureDate {
+                    Text(LoupeDate.dateTime(date))
+                        .foregroundStyle(Theme.textTertiary)
+                }
+            }
+            .font(.caption2)
             if let line {
                 Text(line)
                     .font(.caption2.monospaced())
                     .foregroundStyle(Theme.textSecondary)
             }
-            if item.kind != .video, let model = meta?.cameraModel {
-                Text(model)
+            if let deviceLine = deviceLine(item, meta) {
+                Text(deviceLine)
                     .font(.caption2.monospaced())
                     .foregroundStyle(Theme.textTertiary)
             }
@@ -763,6 +755,18 @@ struct LoupeScreen: View {
         .padding(.top, 8)
         .padding(.bottom, 3)
         .background(Theme.scrim, in: RoundedRectangle(cornerRadius: Theme.radius))
+    }
+
+    /// "iPhone 13 Pro · 4032×3024" — camera model (stills only; videos show
+    /// theirs elsewhere) next to the resolution. Either part may be missing.
+    private func deviceLine(_ item: CardItem, _ meta: ImageMeta?) -> String? {
+        var parts: [String] = []
+        if item.kind != .video, let model = meta?.cameraModel { parts.append(model) }
+        if let size = meta?.pixelSize {
+            // String(Int(...)) on purpose: no locale grouping ("4032", not "4.032").
+            parts.append(String(Int(size.width)) + "×" + String(Int(size.height)))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     /// "ƒ/2.8 · 1/250 s · ISO 400 · 35 mm" — omits whatever is missing.
@@ -1054,9 +1058,9 @@ struct InfoSheet: View {
                     row("Duration", String(format: "%d:%02d", Int(secs) / 60, Int(secs) % 60))
                 }
                 if let date = meta?.captureDate {
-                    row("Captured", date.formatted(date: .abbreviated, time: .standard))
+                    row("Captured", LoupeDate.dateTimeSeconds(date))
                 }
-                row("File date", item.fileDate.formatted(date: .abbreviated, time: .standard))
+                row("File date", LoupeDate.dateTimeSeconds(item.fileDate))
                 if let cs = meta?.colorSpace {
                     row("Color space", cs)
                 }
@@ -1068,6 +1072,15 @@ struct InfoSheet: View {
             }
             .listRowBackground(Theme.surface)
             .listRowSeparatorTint(Theme.hairline)
+
+            if let point = meta?.coordinate {
+                Section {
+                    LocationMiniMap(point: point)
+                } header: {
+                    sectionHeader("Location")
+                }
+                .listRowBackground(Theme.surface)
+            }
 
             if hasCameraInfo {
                 Section {
@@ -1082,7 +1095,6 @@ struct InfoSheet: View {
                     if let bias = meta?.exposureBias, bias != 0 {
                         row("Exposure bias", String(format: "%+.1f EV", bias))
                     }
-                    if let gps = meta?.gpsCoordinateText { row("Location", gps) }
                 } header: {
                     sectionHeader("Camera")
                 }
@@ -1163,6 +1175,11 @@ struct InfoSheet: View {
             } else if item.kind != .video {
                 loadFailed = true
             }
+            // PhotoKit's own location works even when the original (and so
+            // its EXIF) can't be read, and covers videos too.
+            if combined.coordinate == nil {
+                combined.coordinate = PhotoLibrarySource.shared.coordinates(for: [assetID])[assetID]
+            }
             meta = combined
         } else if let url = item.videoURL ?? item.previewURL {
             meta = await ThumbnailStore.metadata(for: url)
@@ -1207,4 +1224,21 @@ struct InfoSheet: View {
                 .lineLimit(2)
         }
     }
+}
+
+/// Numeric dates for the photo view ("10.09.26"), never a spelled-out month.
+enum LoupeDate {
+    private static func formatter(_ format: String) -> DateFormatter {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = format
+        return f
+    }
+    private static let dayFormatter = formatter("dd.MM.yy")
+    private static let dateTimeFormatter = formatter("dd.MM.yy HH:mm")
+    private static let dateTimeSecondsFormatter = formatter("dd.MM.yy HH:mm:ss")
+
+    static func day(_ date: Date) -> String { dayFormatter.string(from: date) }
+    static func dateTime(_ date: Date) -> String { dateTimeFormatter.string(from: date) }
+    static func dateTimeSeconds(_ date: Date) -> String { dateTimeSecondsFormatter.string(from: date) }
 }

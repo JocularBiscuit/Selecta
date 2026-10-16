@@ -88,6 +88,9 @@ final class ProjectFlowTests: XCTestCase {
         library.projectFolder = .picks
         XCTAssertEqual(Set(library.filteredItems.map(\.baseName)), ["Pick"])
 
+        library.projectFolder = .notPicks
+        XCTAssertEqual(Set(library.filteredItems.map(\.baseName)), ["Reject", "Plain"])
+
         library.projectFolder = .rejects
         XCTAssertEqual(Set(library.filteredItems.map(\.baseName)), ["Reject"])
     }
